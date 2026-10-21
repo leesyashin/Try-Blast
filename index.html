@@ -1017,32 +1017,37 @@ function spriteCanvas(up) {
   const g = c.getContext('2d'); g.scale(dpr, dpr);
   return { c, g, w, h: hh, ax: pad + s / 2, ay: up ? pad + 2 * h / 3 : pad + h / 3 };
 }
-// a soft, glossy stone: the rim melts into the face in thin layers instead of hard facets, light from the top
+// bevelled stone: three lit facets around a glossy face; soft contrast and round corners keep it smooth
 function makeTri(col, up) {
   const S = spriteCanvas(up), g = S.g, cx = S.ax, cy = S.ay;
-  const gap = Math.max(1.2, s * 0.04), so = s - 2 * SQ3 * gap, bev = s * 0.1, si = so - 2 * SQ3 * bev;
-  const rO = s * 0.11, rI = s * 0.07, top = cy - h * .55, bot = cy + h * .45;
-  const shade = (lt, dk) => { const gr = g.createLinearGradient(0, top, 0, bot); gr.addColorStop(0, mix(col.base, col.light, lt)); gr.addColorStop(.55, col.base); gr.addColorStop(1, mix(col.base, col.dark, dk)); return gr; };
-  g.save(); g.shadowColor = 'rgba(6,8,40,.4)'; g.shadowBlur = s * 0.1; g.shadowOffsetY = s * 0.04;
-  roundPoly(g, triPts(up, so, cx, cy), rO); g.fillStyle = shade(.55, .5); g.fill(); g.restore();
-  const L = 7;
-  for (let k = 1; k <= L; k++) {
-    const t = k / L, e = t * t * (3 - 2 * t);
-    roundPoly(g, triPts(up, so + (si - so) * t, cx, cy), rO + (rI - rO) * t);
-    g.fillStyle = shade(.55 + (.22 - .55) * e, .5 + (.08 - .5) * e); g.fill();
+  const gap = Math.max(1.2, s * 0.04), so = s - 2 * SQ3 * gap, bev = s * 0.115, si = so - 2 * SQ3 * bev;
+  const O = triPts(up, so, cx, cy), I = triPts(up, si, cx, cy), rO = s * 0.1, rI = s * 0.07;
+  g.save(); g.shadowColor = 'rgba(6,8,40,.45)'; g.shadowBlur = s * 0.07; g.shadowOffsetY = s * 0.035;
+  roundPoly(g, O, rO); g.fillStyle = col.base; g.fill(); g.restore();
+  g.save(); roundPoly(g, O, rO); g.clip();
+  for (let i = 0; i < 3; i++) {
+    const a = O[i], b = O[(i + 1) % 3], ia = I[i], ib = I[(i + 1) % 3];
+    const mx = (a[0] + b[0]) / 2 - cx, my = (a[1] + b[1]) / 2 - cy, len = Math.hypot(mx, my);
+    const dot = (mx / len) * LIGHT[0] + (my / len) * LIGHT[1];
+    g.fillStyle = dot > 0 ? mix(col.base, col.light, Math.min(1, dot * .7)) : mix(col.base, col.dark, Math.min(1, -dot * .6));
+    g.beginPath(); g.moveTo(a[0], a[1]); g.lineTo(b[0], b[1]); g.lineTo(ib[0], ib[1]); g.lineTo(ia[0], ia[1]); g.closePath(); g.fill();
   }
-  g.save(); roundPoly(g, triPts(up, si, cx, cy), rI); g.clip();
-  const gx = cx - s * 0.07, gy = cy - h * (up ? 0.12 : 0.2);
-  const rg = g.createRadialGradient(gx, gy, 0, gx, gy, s * 0.34);
-  rg.addColorStop(0, 'rgba(255,255,255,.5)'); rg.addColorStop(.5, 'rgba(255,255,255,.14)'); rg.addColorStop(1, 'rgba(255,255,255,0)');
+  g.restore();
+  const fg = g.createLinearGradient(0, cy - h * 0.45, 0, cy + h * 0.4);
+  fg.addColorStop(0, mix(col.base, col.light, .3)); fg.addColorStop(1, mix(col.base, col.dark, .12));
+  roundPoly(g, I, rI); g.fillStyle = fg; g.fill();
+  g.save(); roundPoly(g, I, rI); g.clip();
+  const gx = cx - s * 0.1, gy = cy - h * 0.14;
+  const rg = g.createRadialGradient(gx, gy, 0, gx, gy, s * 0.38);
+  rg.addColorStop(0, 'rgba(255,255,255,.42)'); rg.addColorStop(1, 'rgba(255,255,255,0)');
   g.fillStyle = rg; g.fillRect(0, 0, S.w, S.h); g.restore();
-  roundPoly(g, triPts(up, so, cx, cy), rO); g.lineWidth = Math.max(.8, s * 0.014); g.strokeStyle = 'rgba(12,10,46,.16)'; g.stroke();
+  roundPoly(g, O, rO); g.lineWidth = Math.max(1, s * 0.022); g.strokeStyle = 'rgba(12,10,46,.32)'; g.stroke();
   return S;
 }
 function makeFlat(up) {
   const S = spriteCanvas(up), g = S.g;
   const gap = Math.max(1.2, s * 0.04), so = s - 2 * SQ3 * gap;
-  roundPoly(g, triPts(up, so, S.ax, S.ay), s * 0.11); g.fillStyle = '#ffffff'; g.fill();
+  roundPoly(g, triPts(up, so, S.ax, S.ay), s * 0.1); g.fillStyle = '#ffffff'; g.fill();
   return S;
 }
 function makeGlow(color) {
@@ -1088,7 +1093,7 @@ function buildBoard() {
   cells.forEach(cl => {
     const x = cl.ux * s, y = cl.uy * s, pts = triPts(cl.t === 0, so, x, y);
     const sg = g.createLinearGradient(0, y - h / 2, 0, y + h / 2); sg.addColorStop(0, B.cellTop); sg.addColorStop(1, B.cellBot);
-    roundPoly(g, pts, s * 0.11); g.fillStyle = sg; g.fill();
+    roundPoly(g, pts, s * 0.1); g.fillStyle = sg; g.fill();
     g.lineWidth = 1; g.strokeStyle = B.cellLine; g.stroke();
   });
   boardBg = { c, ax: w / 2, ay: hh / 2, w, h: hh };
