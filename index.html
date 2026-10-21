@@ -371,12 +371,14 @@ const WHITE_GLOW = PALETTE.length;
 const RAINBOW = -2;                            // colour marker for the mega piece
 const LIGHT = (() => { const x = -0.38, y = -1, l = Math.hypot(x, y); return [x / l, y / l]; })();
 const DIRS = [[0.5, -HH], [1, 0], [0.5, HH]];   // screen direction of each line family
+const SLAM = .08;                              // a placed piece falls onto the board for this long before it hits
 const PRAISE = [null, null, 'Stark!', 'Mega!', 'Wahnsinn!', 'Unglaublich!'];
 
 /* ================= helpers ================= */
 const $ = id => document.getElementById(id);
 let gclock = performance.now() / 1000, realLast = gclock, freezeUntil = 0;
 const T = () => gclock;                                   // game clock: stands still during hit-stop
+const hitStopLater = (sec, delay) => setTimeout(() => hitStop(sec), delay * 1000);
 function hitStop(sec) { freezeUntil = Math.max(freezeUntil, performance.now() / 1000 + (REDUCED ? sec * .5 : sec)); }
 const clamp01 = x => x < 0 ? 0 : x > 1 ? 1 : x;
 const easeOutCubic = x => 1 - Math.pow(1 - x, 3);
@@ -489,9 +491,9 @@ function addShape(raw) {
   for (let dir = 0; dir < 3; dir++) { const seq = strip(dir, 7); addShape(seq.slice(0, 6)); addShape(seq.slice(1, 7)); }
   addShape([{ u: 0, v: 0, t: 0 }, { u: -1, v: 0, t: 0 }, { u: 0, v: -1, t: 0 }, { u: -1, v: 0, t: 1 }, { u: -1, v: -1, t: 1 }, { u: 0, v: -1, t: 1 }]);
 })();
-// long bars (7 and 8) are never random: they only come as the piece that finishes a line
+// long bars (7 to 9) are never random: they only come as the piece that finishes a line, at most one per set
 const longBars = [];
-for (let dir = 0; dir < 3; dir++) for (const len of [7, 8]) {
+for (let dir = 0; dir < 3; dir++) for (const len of [7, 8, 9]) {
   const seq = strip(dir, len + 1);
   for (const part of [seq.slice(0, len), seq.slice(1, len + 1)]) {
     const n = norm(part), k = keyOf(n); if (shapeByKey.has(k)) continue;
@@ -568,7 +570,8 @@ function chainHelpers(o, k) {
   const res = []; let cur = o;
   for (let step = 0; step < k; step++) {
     const opts = [];
-    for (const sh of allShapes.concat(longBars)) {
+    const longOk = !res.some(x => longBars.includes(x));
+    for (const sh of longOk ? allShapes.concat(longBars) : allShapes) {
       if (res.includes(sh)) continue;
       let bestR = null;   // best placement per shape, so the pick below is spread over different pieces
       for (const idx of placementsOcc(cur, sh)) { const r = applyOcc(cur, idx); if (r.cleared && (!bestR || r.cleared > bestR.cleared)) bestR = r; }
@@ -721,13 +724,13 @@ function orderPuzzle(o) {
   }
   return null;
 }
-// normal phase: every set can be fully placed, at least one piece clears a line whenever the board allows it,
-// and the rest are picked to build toward full lines; a running combo gets a two-piece clearing chain
+// normal phase: every set can be fully placed, as many pieces as the board allows (up to all three) clear a line,
+// and the rest are picked to build toward full lines
 function normalShapes(noPuzzle) {
   const o = occNow();
   // puzzles can end the run, so they only show up once the run has some substance
-  if (!noPuzzle && score >= run.target * .4 && Math.random() < 0.1) { const pz = orderPuzzle(o); if (pz) { lastDealPuzzle = true; return pz; } }
-  const ch = chainHelpers(o, 2);
+  if (!noPuzzle && score >= run.target * .4 && Math.random() < 0.05) { const pz = orderPuzzle(o); if (pz) { lastDealPuzzle = true; return pz; } }
+  const ch = chainHelpers(o, 3);
   return shuffle(fillFriendly(ch.o, ch.shapes, 5));
 }
 // record run before the target: the best line-clearing pieces that fit right now
@@ -738,9 +741,9 @@ function boostShapes() {
 // onboarding before the target: every set can be fully placed and carries line-clearing chains
 function onboardShapes(noPuzzle) {
   const o = occNow(), help = run.help || 2;
-  const pzChance = help >= 3 ? .04 : help === 2 ? .08 : .12;
+  const pzChance = help >= 3 ? .02 : help === 2 ? .04 : .06;
   if (!noPuzzle && score >= run.target * .4 && Math.random() < pzChance) { const pz = orderPuzzle(o); if (pz) { lastDealPuzzle = true; return pz; } }
-  const ch = chainHelpers(o, help >= 3 || combo >= 1 ? 3 : 2);
+  const ch = chainHelpers(o, 3);
   return shuffle(fillFriendly(ch.o, ch.shapes, 5));
 }
 // first bad set: big pieces that fit but clear nothing
@@ -1147,12 +1150,14 @@ const Sound = (() => {
       if (hot) tone({ f: 3300, t: .02, a: .001, d: .03, g: .03, rev: .4 });
     },
     back() { if (!live()) return; tone({ f: 340, f2: 165, a: .004, d: .18, g: .16 }); noise({ type: 'lowpass', f: 700, f2: 200, d: .12, g: .07 }); },
-    place() {
-      if (!live()) return; const r = 1 + (Math.random() - .5) * .1;
-      tone({ f: 210 * r, f2: 66 * r, a: .002, d: .16, g: .6 });
-      tone({ f: 520 * r, f2: 250 * r, type: 'triangle', a: .001, d: .05, g: .1 });
-      noise({ type: 'bandpass', f: 2600, q: .9, a: .001, d: .03, g: .32 });
-      noise({ type: 'lowpass', f: 1200, f2: 300, a: .002, d: .08, g: .16 });
+    place(delay) {
+      if (!live()) return; const r = 1 + (Math.random() - .5) * .1, t = delay || 0;
+      noise({ type: 'bandpass', f: 1200, f2: 4000, q: 1.2, t: 0, a: .03, d: .05, g: .05 });
+      tone({ f: 210 * r, f2: 66 * r, t, a: .002, d: .16, g: .6 });
+      tone({ f: 95 * r, f2: 38 * r, t, a: .003, d: .22, g: .45 });
+      tone({ f: 520 * r, f2: 250 * r, type: 'triangle', t, a: .001, d: .05, g: .1 });
+      noise({ type: 'bandpass', f: 2600, q: .9, t, a: .001, d: .03, g: .32 });
+      noise({ type: 'lowpass', f: 1200, f2: 300, t, a: .002, d: .08, g: .16 });
     },
     crack() {
       if (!live()) return; const t = ac.currentTime; if (t - lastCrack < .022) return; lastCrack = t;
@@ -1345,11 +1350,10 @@ function commit(p, du, dv, pv) {
   let ix = 0, iy = 0;
   idxs.forEach((i, k) => { const c = cells[i]; c.color = colOf(i); c.gold = k === p.gold; c.popT = now; c.popKind = 1; ix += c.x; iy += c.y; });
   ix /= idxs.length; iy /= idxs.length;
+  idxs.forEach(i => { cells[i].pcx = ix; cells[i].pcy = iy; });
   tray[p.slot] = null;
-  Sound.place();
-  rings.push({ x: ix, y: iy, t0: now, dur: .32, r: s * (1.2 + idxs.length * .12), color: isMega ? 2 : p.color });
-  ripple(ix, iy, .35);
-  idxs.forEach(i => { const c = cells[i]; for (let k = 0; k < 2; k++) spawnSpark(c.x, c.y, colOf(i), s * (1 + Math.random() * 2), .3 + Math.random() * .2, 2 + Math.random() * 2); });
+  Sound.place(SLAM);
+  slamFx(idxs, ix, iy, isMega ? 2 : p.color, colOf);
   if (isMega) stats.megas++;
   const nova = isMega && !!(p.shape.mega && p.shape.mega.nova);
 
@@ -1369,7 +1373,7 @@ function commit(p, du, dv, pv) {
     gained += pts;
     clearSet.forEach(j => {
       const c = cells[j], d = Math.hypot(c.x - ix, c.y - iy);
-      clears.push({ x: c.x, y: c.y, t: c.t, color: c.color, gold: c.gold, t0: now, delay: 0.03 + d / (s * (isMega ? 13 : 24)), burst: false, dead: false, ix, iy });
+      clears.push({ x: c.x, y: c.y, t: c.t, color: c.color, gold: c.gold, t0: now, delay: SLAM + .05 + d / (s * (isMega ? 13 : 24)), burst: false, dead: false, ix, iy, slam: idxs.includes(j) });
       c.color = -1; c.gold = false;
     });
     novaSet.forEach(j => {
@@ -1378,8 +1382,8 @@ function commit(p, du, dv, pv) {
       c.color = -1; c.gold = false;
     });
     cleared = clearSet.size + novaSet.size;
-    full.forEach(li => beams.push({ L: lines[li], color: isMega ? li % PALETTE.length : p.color, t0: now, ix, iy }));
-    ripple(ix, iy, Math.min(1.8, .8 + .3 * L + (isMega ? .6 : 0) + (nova ? .6 : 0)));
+    full.forEach(li => beams.push({ L: lines[li], color: isMega ? li % PALETTE.length : p.color, t0: now + SLAM, ix, iy }));
+    ripple(ix, iy, Math.min(1.8, .8 + .3 * L + (isMega ? .6 : 0) + (nova ? .6 : 0)), SLAM);
     if (!nova && !REDUCED && L >= 2) zoomFx = { t0: now, dur: .38, amp: Math.min(.05, .012 + .009 * L) };
     scoreStream(ix, iy, Math.min(18, 4 + L * 3 + (isMega ? 6 : 0)));
     // texts
@@ -1394,10 +1398,10 @@ function commit(p, du, dv, pv) {
     texts.push(popTxt);
     if (golds) goldFx(golds, mult, ix, iy);
     // juice
-    if (!REDUCED) { shake.amp = Math.min(s * (isMega ? .7 : .45), s * (.08 + .07 * L + .03 * combo + (isMega ? .25 : 0))); shake.t0 = now; shake.dur = isMega ? .6 : .35; }
+    if (!REDUCED) { shake.amp = Math.min(s * (isMega ? .7 : .45), s * (.08 + .07 * L + .03 * combo + (isMega ? .25 : 0))); shake.t0 = now + SLAM; shake.dur = isMega ? .6 : .35; }
     if (L >= 2) rings.push({ x: ix, y: iy, t0: now, dur: .65, r: s * (5 + L * 1.5), color: isMega ? 2 : p.color });
-    if (L >= 3 || isMega) flashes.push({ t0: now, dur: isMega ? .6 : .4, a: isMega ? .4 : .28 });
-    hitStop(isMega ? .12 : .045 + .015 * Math.min(L, 4));
+    if (L >= 3 || isMega) flashes.push({ t0: now + SLAM, dur: isMega ? .6 : .4, a: isMega ? .4 : .28 });
+    hitStopLater(isMega ? .12 : .045 + .015 * Math.min(L, 4), SLAM);
     buzz(isMega ? [30, 40, 30, 40, 80] : L >= 2 ? [25, 30, 45] : 28);
     Sound.clear(L, combo);
     if (nova) {
@@ -1422,7 +1426,6 @@ function commit(p, du, dv, pv) {
     }
     elScore.classList.remove('bump'); void elScore.offsetWidth; elScore.classList.add('bump');
   } else {
-    buzz(12);
     since++; if (since >= 3) breakCombo();
   }
   score += gained;
@@ -1493,6 +1496,24 @@ function comboStream(x, y) {
     x0: x + (Math.random() - .5) * s * 2.2, y0: y + (Math.random() - .5) * s, x1: tx, y1: ty,
     cx: x + (Math.random() - .5) * s * 7, cy: Math.min(y, ty) - s * (.5 + Math.random() * 2.5),
     t0: now + .12 + k * .028, dur: .5 + Math.random() * .2, ci: tier === 3 ? k % PALETTE.length : [4, 1, 0][tier], size: s * (.26 + Math.random() * .18), hit: false });
+}
+// the moment a piece lands: shock ring, dust thrown out from its edges, a bump, a wave and a thud
+function slamFx(idxs, ix, iy, ringCol, colOf) {
+  const t0 = now + SLAM, n = idxs.length;
+  rings.push({ x: ix, y: iy, t0, dur: .42, r: s * (1.6 + n * .16), color: ringCol });
+  rings.push({ x: ix, y: iy, t0: t0 + .05, dur: .5, r: s * (2.4 + n * .2), color: ringCol });
+  ripple(ix, iy, .5 + Math.min(n, 8) * .05, SLAM);
+  setTimeout(() => buzz(18), SLAM * 1000);
+  if (REDUCED) return;
+  if (shake.amp === 0) { shake.amp = s * (.05 + n * .008); shake.t0 = t0; shake.dur = .2; }
+  for (const i of idxs) {
+    const c = cells[i]; let dx = c.x - ix, dy = c.y - iy; const dl = Math.hypot(dx, dy) || 1; dx /= dl; dy /= dl;
+    for (let k = 0; k < 3; k++) {
+      const a = Math.atan2(dy, dx) + (Math.random() - .5) * 1.6, sp = s * (2.5 + Math.random() * 4);
+      sparks.push({ x: c.x + dx * s * .3, y: c.y + dy * s * .3, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, t0, life: .3 + Math.random() * .25,
+        size: s * (.08 + Math.random() * .1), ci: k === 0 ? WHITE_GLOW : colOf(i) < 0 ? 2 : colOf(i), star: k === 0 && Math.random() < .3 });
+    }
+  }
 }
 // golden sparks from a clear into the score, each one pumps it on arrival
 function scoreStream(x, y, n) {
@@ -1871,8 +1892,15 @@ function updateMuteIcon() {
 }
 
 /* ================= particles ================= */
+// a placed piece: lifted big, slams down below size, wobbles back; scale is around the piece centre
+function slamAt(age) {
+  if (REDUCED) return [1, age < .3 ? .6 * (1 - age / .3) : 0];
+  if (age < SLAM) { const q = age / SLAM; return [1.28 - .38 * q * q, .2]; }
+  const q = (age - SLAM) / .32; if (q >= 1) return [1, 0];
+  return [1 - .1 * Math.cos(q * Math.PI * 2) * (1 - q) * (1 - q), .95 * (1 - q) * (1 - q)];
+}
 // a wave runs out from the impact and makes every stone on the board hop as it passes
-function ripple(x, y, amp) { if (!REDUCED) ripples.push({ x, y, t0: now, amp }); }
+function ripple(x, y, amp, delay) { if (!REDUCED) ripples.push({ x, y, t0: now + (delay || 0), amp }); }
 function rippleAt(x, y) {
   let oy = 0, k = 0;
   for (const r of ripples) {
@@ -2205,8 +2233,8 @@ function render() {
   shx = 0; shy = 0;
   if (shake.amp > 0) {
     const q = (now - shake.t0) / shake.dur;
-    if (q < 1) { const k = (1 - q) * (1 - q) * shake.amp; shx = (Math.random() * 2 - 1) * k; shy = (Math.random() * 2 - 1) * k; }
-    else shake.amp = 0;
+    if (q >= 1) shake.amp = 0;
+    else if (q >= 0) { const k = (1 - q) * (1 - q) * shake.amp; shx = (Math.random() * 2 - 1) * k; shy = (Math.random() * 2 - 1) * k; }
   }
   ctx.setTransform(dpr, 0, 0, dpr, shx * dpr, shy * dpr);
   if (zoomFx) {
@@ -2258,17 +2286,17 @@ function render() {
     }
     const grey = gameOver && now >= c.greyAt, ci = grey ? GREY : c.gold ? GOLD : c.color;
     const age = now - c.popT;
-    let k = 1, fl = 0, oy = 0;
+    let k = 1, fl = 0, oy = 0, px = c.x, py = c.y;
     if (c.popKind === 3) {
       if (age < .3) { const q = age / .3; oy = -(1 - q) * (1 - q) * s * 3.2; ctx.globalAlpha = Math.min(1, q * 2.5); }
       else if (age < .5) fl = .5 * (1 - (age - .3) / .2);
-    } else if (c.popKind === 1 && age < .3) { const q = age / .3; k = 1 + .14 * (1 - easeOutCubic(q)); fl = .7 * (1 - q) * (1 - q); }
+    } else if (c.popKind === 1 && age < SLAM + .32) { const sl = slamAt(age); k = sl[0]; fl = sl[1]; px = c.pcx + (c.x - c.pcx) * k; py = c.pcy + (c.y - c.pcy) * k; }
     else if (c.popKind === 2 && age < .34) k = Math.max(.01, easeOutBack(age / .34));
     if (gameOver && now >= c.greyAt && now - c.greyAt < .2) { k = 1 + .1 * (1 - (now - c.greyAt) / .2); }
     if (ripples.length) { const rp = rippleAt(c.x, c.y); oy += rp[0]; k += rp[1]; if (rp[1] > 0) fl = Math.max(fl, rp[1] * 2.2); }
-    drawSpr(sprites[ci][c.t], c.x, c.y + oy, k);
+    drawSpr(sprites[ci][c.t], px, py + oy, k);
     ctx.globalAlpha = 1;
-    if (fl > 0) glow(c.t, c.x, c.y + oy, fl, k);
+    if (fl > 0) glow(c.t, px, py + oy, fl, k);
     if (c.gold && !grey) {
       const tw = Math.sin(now * 2.6 + i * 1.7);
       if (tw > .55) { ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = (tw - .55) * 2.2; ctx.drawImage(starSpr, c.x - s * .28, c.y - s * .3, s * .56, s * .56); ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1; }
@@ -2313,7 +2341,10 @@ function render() {
   for (const e of clears) {
     const age = now - e.t0;
     const spr = sprites[e.gold ? GOLD : e.color][e.t];
-    if (age < e.delay) {
+    if (e.slam && age < SLAM + .05) {
+      const sl = slamAt(age), x = e.ix + (e.x - e.ix) * sl[0], y = e.iy + (e.y - e.iy) * sl[0];
+      drawSpr(spr, x, y, sl[0]); glow(e.t, x, y, sl[1], sl[0]);
+    } else if (age < e.delay) {
       const q = age / e.delay, j = REDUCED ? 0 : s * .035 * q;
       const x = e.x + (Math.random() * 2 - 1) * j, y = e.y + (Math.random() * 2 - 1) * j;
       drawSpr(spr, x, y, 1 + .14 * q);
@@ -2328,7 +2359,7 @@ function render() {
     }
   }
   for (const b of beams) {
-    const q = (now - b.t0) / .55;
+    const q = (now - b.t0) / .55; if (q < 0) continue;
     drawBeam(b.L, b.color, Math.pow(1 - q, 1.6) * .9, .55 + .9 * easeOutCubic(q));
     if (b.ix != null && !REDUCED && q < .75) drawFlares(b, q / .75);
   }
@@ -2358,6 +2389,7 @@ function render() {
     else { const r = p.size * (1 - q * .5) * 2.2; ctx.drawImage(glowSpr[p.ci], p.x - r, p.y - r, r * 2, r * 2); }
   }
   for (const r of rings) {
+    if (now < r.t0) continue;
     const q = clamp01((now - r.t0) / r.dur);
     ctx.globalAlpha = (1 - q) * .8; ctx.strokeStyle = PALETTE[r.color].light; ctx.lineWidth = s * .35 * (1 - q) + 1;
     ctx.beginPath(); ctx.arc(r.x, r.y, r.r * easeOutCubic(q), 0, Math.PI * 2); ctx.stroke();
@@ -2378,7 +2410,7 @@ function render() {
     else if (q > 0) { ctx.globalAlpha = 1; ctx.fillStyle = `hsla(${REDUCED ? 48 : (now * 520) % 360},100%,62%,${.32 * (1 - q)})`; ctx.fillRect(-20, -20, W + 40, H + 40); }
   }
   for (const f of flashes) {
-    const q = (now - f.t0) / f.dur;
+    const q = (now - f.t0) / f.dur; if (q < 0) continue;
     const rg = ctx.createRadialGradient(boardCX, boardCY, 0, boardCX, boardCY, Math.max(W, H) * .7);
     rg.addColorStop(0, `rgba(255,255,255,${f.a * (1 - q)})`); rg.addColorStop(1, 'rgba(255,255,255,0)');
     ctx.globalAlpha = 1; ctx.fillStyle = rg; ctx.fillRect(-20, -20, W + 40, H + 40);
