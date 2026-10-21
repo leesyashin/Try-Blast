@@ -57,8 +57,6 @@ body{
 .scorebox{display:flex;flex-direction:column;align-items:center;gap:5px}
 .score{font-family:var(--f-display);font-size:clamp(44px,12vw,62px);line-height:1;letter-spacing:.01em;
   text-shadow:0 4px 0 rgba(28,14,82,.55),0 0 26px rgba(150,190,255,.5);font-variant-numeric:tabular-nums}
-.score.bump{animation:bump .34s cubic-bezier(.3,1.6,.5,1)}
-@keyframes bump{0%{transform:scale(1)}40%{transform:scale(1.2)}100%{transform:scale(1)}}
 .combo{display:inline-flex;align-items:center;gap:7px;padding:3px 11px 3px 12px;border-radius:999px;
   background:rgba(18,12,70,.42);border:1px solid rgba(255,212,71,.5);font-weight:900;font-size:12px;
   letter-spacing:.08em;text-transform:uppercase;color:var(--gold)}
@@ -138,9 +136,6 @@ body{
 @keyframes hot{from{transform:scale(1)}to{transform:scale(1.08)}}
 .combo.blaze{box-shadow:0 0 22px rgba(255,255,255,.75);animation:hot .45s ease-in-out infinite alternate,hue 1.1s linear infinite}
 @keyframes hue{from{filter:hue-rotate(0deg)}to{filter:hue-rotate(360deg)}}
-.combo.pop{animation:cpop .26s cubic-bezier(.3,1.8,.5,1)}
-.combo.blaze.pop{animation:cpop .26s cubic-bezier(.3,1.8,.5,1),hue 1.1s linear infinite}
-@keyframes cpop{0%{transform:scale(1)}40%{transform:scale(1.32)}100%{transform:scale(1)}}
 .combo.broken{animation:broke .7s ease-out forwards;color:var(--ink-soft);border-color:rgba(255,255,255,.3)}
 @keyframes broke{0%{transform:none}15%{transform:translateX(-6px) rotate(-4deg)}30%{transform:translateX(6px) rotate(4deg)}
   45%{transform:translateX(-4px)}60%{transform:translateX(3px);opacity:1}100%{transform:translateY(10px) scale(.8);opacity:0}}
@@ -217,7 +212,7 @@ body{
 .share-hint{margin:0;font-weight:800;font-size:12.5px;line-height:1.4;color:var(--ink-soft);text-align:center;text-wrap:balance}
 .share-text{width:100%;resize:none;border-radius:12px;border:1px solid var(--glass-line);background:rgba(0,0,0,.25);color:var(--ink);
   font:800 14px/1.4 var(--f-ui);padding:10px 12px;-webkit-user-select:text;user-select:text}
-@media (prefers-reduced-motion: reduce){.card,.score.bump,.boostbtn::after,.sheet,.combo.hot,.combo.broken,.combo.blaze,.combo.pop{animation:none}}
+@media (prefers-reduced-motion: reduce){.card,.boostbtn::after,.sheet,.combo.hot,.combo.broken,.combo.blaze{animation:none}}
 </style>
 
 <div id="app">
@@ -548,16 +543,54 @@ function bestClear(sh) {
 /* ---------- dealing: board simulation helpers ---------- */
 const allShapes = [1, 2, 3, 4, 5, 6].flatMap(k => pool[k]);
 function occNow() { const o = new Uint8Array(cells.length); cells.forEach((c, i) => { if (c.color >= 0) o[i] = 1; }); return o; }
-function placementsOcc(o, sh) {
+// every spot a shape can take on the empty board, worked out once per shape
+function allPlacements(sh) {
+  if (sh.allPl) return sh.allPl;
   const res = [], c0 = sh.cells[0];
-  for (let i = 0; i < cells.length; i++) {
-    const c = cells[i]; if (c.t !== c0.t || o[i]) continue;
+  for (const c of cells) {
+    if (c.t !== c0.t) continue;
     const du = c.u - c0.u, dv = c.v - c0.v, idx = [];
     let ok = true;
-    for (const q of sh.cells) { const j = cid(q.u + du, q.v + dv, q.t); if (j < 0 || o[j]) { ok = false; break; } idx.push(j); }
+    for (const q of sh.cells) { const j = cid(q.u + du, q.v + dv, q.t); if (j < 0) { ok = false; break; } idx.push(j); }
     if (ok) res.push(idx);
   }
+  return (sh.allPl = res);
+}
+// the placements of a shape that cover cell j
+function placementsAt(sh, j) {
+  if (!sh.byCell) { sh.byCell = cells.map(() => []); for (const idx of allPlacements(sh)) for (const q of idx) sh.byCell[q].push(idx); }
+  return sh.byCell[j];
+}
+function placementsOcc(o, sh) {
+  const res = [];
+  for (const idx of allPlacements(sh)) { let ok = true; for (const j of idx) if (o[j]) { ok = false; break; } if (ok) res.push(idx); }
   return res;
+}
+// stones per line, so a placement can be judged without copying the board
+function lineFillOcc(o) {
+  const f = new Uint8Array(lines.length);
+  for (let li = 0; li < lines.length; li++) { let n = 0; for (const q of lines[li].cells) n += o[q]; f[li] = n; }
+  return f;
+}
+const addCnt = new Uint8Array(lines.length), touchedTmp = [];
+// lines a placement completes, and how full the lines it touches get (near-full lines weigh most)
+function evalPl(fill, idx) {
+  touchedTmp.length = 0;
+  for (const j of idx) for (const li of cells[j].lines) { if (!addCnt[li]) touchedTmp.push(li); addCnt[li]++; }
+  let cleared = 0, build = 0;
+  for (const li of touchedTmp) {
+    const n = lines[li].cells.length, f = fill[li] + addCnt[li];
+    if (f === n) cleared++;
+    const r = f / n; build += r * r * r; addCnt[li] = 0;
+  }
+  return { cleared, build: build / touchedTmp.length };
+}
+function clearsOf(fill, idx) {
+  touchedTmp.length = 0;
+  for (const j of idx) for (const li of cells[j].lines) { if (!addCnt[li]) touchedTmp.push(li); addCnt[li]++; }
+  let cleared = 0;
+  for (const li of touchedTmp) { if (fill[li] + addCnt[li] === lines[li].cells.length) cleared++; addCnt[li] = 0; }
+  return cleared;
 }
 function applyOcc(o, idx) {
   const n = o.slice(); idx.forEach(j => { n[j] = 1; });
@@ -566,23 +599,105 @@ function applyOcc(o, idx) {
   full.forEach(li => lines[li].cells.forEach(q => { n[q] = 0; }));
   return { o: n, cleared: full.length };
 }
-function chainHelpers(o, k) {
+// up to k pieces that each clear a line, simulated one after the other.
+// In a tight spot, pieces cut to fit the board exactly (see perfectFits) go first
+function chainHelpers(o, k, tight) {
   const res = []; let cur = o;
   for (let step = 0; step < k; step++) {
-    const opts = [];
+    const opts = [], fill = lineFillOcc(cur);
+    // a clearing placement has to cover every gap of some line, so only those are looked at
+    const gaps = [];
+    lines.forEach((L, li) => { const e = L.cells.length - fill[li]; if (e >= 1 && e <= 9) gaps.push(L.cells.filter(j => !cur[j])); });
+    if (!gaps.length) break;
     const longOk = !res.some(x => longBars.includes(x));
     for (const sh of longOk ? allShapes.concat(longBars) : allShapes) {
       if (res.includes(sh)) continue;
-      let bestR = null;   // best placement per shape, so the pick below is spread over different pieces
-      for (const idx of placementsOcc(cur, sh)) { const r = applyOcc(cur, idx); if (r.cleared && (!bestR || r.cleared > bestR.cleared)) bestR = r; }
-      if (bestR) opts.push({ sh, r: bestR });
+      let best = null;   // best placement per shape, so the pick below is spread over different pieces
+      for (const G of gaps) {
+        if (G.length > sh.size) continue;
+        for (const idx of placementsAt(sh, G[0])) {
+          let ok = true; for (const j of idx) if (cur[j]) { ok = false; break; }
+          if (!ok || !G.every(j => idx.includes(j))) continue;
+          const c = clearsOf(fill, idx); if (!best || c > best.cleared) best = { cleared: c, idx };
+        }
+      }
+      if (best) opts.push({ sh, idx: best.idx, cleared: best.cleared, fit: false });
+    }
+    if (res.filter(x => x.fit).length < (tight ? 2 : 1)) for (const idx of perfectFits(cur, fill, true)) {
+      const c = clearsOf(fill, idx);
+      if (c) opts.push({ sh: fitShape(idx), idx, cleared: c, fit: true });
     }
     if (!opts.length) break;
-    opts.sort((a, b) => b.r.cleared - a.r.cleared || (b.sh.straight - a.sh.straight) || b.sh.size - a.sh.size);
-    const ch = pick(opts.slice(0, 12));
-    res.push(ch.sh); cur = ch.r.o;
+    opts.sort((a, b) => (tight ? b.fit - a.fit : 0) || b.cleared - a.cleared || (b.sh.straight - a.sh.straight) || b.sh.size - a.sh.size);
+    const ch = pick(opts.slice(0, tight && opts[0].fit ? 2 : 12));
+    res.push(ch.sh); cur = applyOcc(cur, ch.idx).o;
   }
   return { shapes: res, o: cur };
+}
+/* ---------- perfect fits: pieces cut from the board itself ---------- */
+function connected(idx) {
+  const S = new Set(idx), seen = new Set([idx[0]]), st = [idx[0]];
+  while (st.length) { const x = st.pop(); for (const y of ADJ[x]) if (S.has(y) && !seen.has(y)) { seen.add(y); st.push(y); } }
+  return seen.size === S.size;
+}
+// connected empty regions of the board
+function pocketsOcc(o) {
+  const seen = new Uint8Array(cells.length), res = [];
+  for (let i = 0; i < cells.length; i++) {
+    if (o[i] || seen[i]) continue;
+    const comp = [i]; seen[i] = 1;
+    for (let q = 0; q < comp.length; q++) for (const y of ADJ[comp[q]]) if (!o[y] && !seen[y]) { seen[y] = 1; comp.push(y); }
+    res.push(comp);
+  }
+  return res;
+}
+const FIT_MAX = 8;
+// exact cell sets worth a piece: the gaps of two lines joined into one piece (clears both at once),
+// and, unless clearOnly, small closed-in holes that most pieces can't reach
+function perfectFits(o, fill, clearOnly) {
+  const out = [], keys = new Set();
+  const add = idx => { const k = idx.slice().sort((a, b) => a - b).join(','); if (!keys.has(k)) { keys.add(k); out.push(idx); } };
+  const gaps = [];
+  lines.forEach((L, li) => { const e = L.cells.length - fill[li]; if (e >= 1 && e <= 5 && fill[li] >= 3) gaps.push(L.cells.filter(j => !o[j])); });
+  // two gaps only make one piece when they nearly touch
+  const near = (A, B) => A.some(i => B.some(j => Math.abs(cells[i].ux - cells[j].ux) < 1.3 && Math.abs(cells[i].uy - cells[j].uy) < 1.3));
+  for (let a = 0; a < gaps.length; a++) for (let b = a + 1; b < gaps.length; b++) {
+    if (gaps[a].length + gaps[b].length > FIT_MAX + 1 || !near(gaps[a], gaps[b])) continue;
+    const U = new Set(gaps[a]); gaps[b].forEach(j => U.add(j));
+    if (U.size > FIT_MAX) continue;
+    const S = connectCells(U, o, FIT_MAX); if (S) add([...S]);
+  }
+  if (!clearOnly) for (const comp of pocketsOcc(o)) if (comp.length >= 2 && comp.length <= 6) add(comp);
+  return out;
+}
+// a fresh piece shaped exactly like these cells, remembering the spot it was cut for
+function fitShape(idx) {
+  const raw = idx.map(j => ({ u: cells[j].u, v: cells[j].v, t: cells[j].t }));
+  let mu = Infinity, mv = Infinity; raw.forEach(c => { if (c.u < mu) mu = c.u; if (c.v < mv) mv = c.v; });
+  const sh = buildShape(norm(raw));
+  sh.custom = true; sh.fit = { du: mu, dv: mv, idx: idx.slice() };
+  return sh;
+}
+// the board is getting stuck: crowded, riddled with small holes, or most bigger pieces no longer fit
+function tightSpot(o) {
+  let filled = 0; for (let i = 0; i < o.length; i++) filled += o[i];
+  if (filled >= cells.length * .38) return true;
+  if (pocketsOcc(o).filter(c => c.length <= 4).length >= 3) return true;
+  let fits = 0, all = 0;
+  for (const sh of allShapes) {
+    if (sh.size < 3) continue; all++;
+    for (const idx of allPlacements(sh)) { let ok = true; for (const j of idx) if (o[j]) { ok = false; break; } if (ok) { fits++; break; } }
+  }
+  return fits < all * .55;
+}
+// tight spot: plug the hole that leaves the board best off with a piece cut to match
+function pocketHelper(o) {
+  const fill = lineFillOcc(o); let best = null;
+  for (const idx of perfectFits(o, fill, false)) {
+    const e = evalPl(fill, idx), sc = e.cleared * 10 + e.build * 9 + idx.length * .2;
+    if (!best || sc > best.sc) best = { idx, sc };
+  }
+  return best && { sh: fitShape(best.idx), o: applyOcc(o, best.idx).o };
 }
 function fillFitting(o, shapes, maxSize) {
   const cand = shuffle(allShapes.filter(x => x.size <= maxSize && !shapes.includes(x) && placementsOcc(o, x).length));
@@ -590,36 +705,24 @@ function fillFitting(o, shapes, maxSize) {
   while (shapes.length < 3) shapes.push(pool[1][rint(2)]);
   return shapes;
 }
-// how well a placement builds toward full lines: clears count most, then how full the touched lines get
-function buildScore(o, idx) {
-  const r = applyOcc(o, idx), seen = new Set(), inIdx = new Set(idx);
-  let fill = 0, n = 0;
-  for (const j of idx) for (const li of cells[j].lines) {
-    if (seen.has(li)) continue; seen.add(li);
-    const L = lines[li].cells; let f = 0;
-    for (const q of L) if (o[q] || inIdx.has(q)) f++;
-    fill += Math.pow(f / L.length, 3); n++;
-  }
-  return { sc: r.cleared * 10 + (n ? fill / n : 0) * 9, r };
-}
 // fill the set with pieces that fit together: each one is simulated on the board left by the ones before,
 // so the whole set can always be placed, and every piece pushes some line toward full.
 // o is the board after the pieces already in shapes are placed
 function fillFriendly(o, shapes, maxSize) {
   let cur = o;
   while (shapes.length < 3) {
-    const opts = [];
+    const opts = [], fill = lineFillOcc(cur);
     for (const sh of allShapes) {
       if (sh.size > maxSize || shapes.includes(sh)) continue;
-      let bestP = null;
-      for (const idx of placementsOcc(cur, sh)) { const b = buildScore(cur, idx); if (!bestP || b.sc > bestP.sc) bestP = b; }
-      if (!bestP) continue;
-      opts.push({ sh, r: bestP.r, sc: bestP.sc + (sh.straight ? 1.2 : 0) + sh.size * .25 + Math.random() * 1.5 });
+      let best = null;
+      for (const idx of placementsOcc(cur, sh)) { const e = evalPl(fill, idx), sc = e.cleared * 10 + e.build * 9; if (!best || sc > best.sc) best = { sc, idx }; }
+      if (!best) continue;
+      opts.push({ sh, idx: best.idx, sc: best.sc + (sh.straight ? 1.2 : 0) + sh.size * .25 + Math.random() * 1.5 });
     }
     if (!opts.length) break;
     opts.sort((a, b) => b.sc - a.sc);
     const ch = pick(opts.slice(0, 6));
-    shapes.push(ch.sh); cur = ch.r.o;
+    shapes.push(ch.sh); cur = applyOcc(cur, ch.idx).o;
   }
   return fillFitting(cur, shapes, maxSize);
 }
@@ -730,21 +833,25 @@ function normalShapes(noPuzzle) {
   const o = occNow();
   // puzzles can end the run, so they only show up once the run has some substance
   if (!noPuzzle && score >= run.target * .4 && Math.random() < 0.05) { const pz = orderPuzzle(o); if (pz) { lastDealPuzzle = true; return pz; } }
-  const ch = chainHelpers(o, 3);
-  return shuffle(fillFriendly(ch.o, ch.shapes, 5));
+  return shuffle(helpedSet(o, 3, 5));
+}
+// clearing chain first; in a tight spot also a piece cut for the worst hole; then pieces that build lines
+function helpedSet(o, k, maxSize) {
+  const tight = tightSpot(o), ch = chainHelpers(o, k, tight);
+  let cur = ch.o;
+  if (tight && ch.shapes.length < 3 && ch.shapes.filter(x => x.fit).length < 2) { const ph = pocketHelper(cur); if (ph) { ch.shapes.push(ph.sh); cur = ph.o; } }
+  return fillFriendly(cur, ch.shapes, maxSize);
 }
 // record run before the target: the best line-clearing pieces that fit right now
 function boostShapes() {
-  const ch = chainHelpers(occNow(), 3);
-  return shuffle(fillFriendly(ch.o, ch.shapes, 4));
+  return shuffle(helpedSet(occNow(), 3, 4));
 }
 // onboarding before the target: every set can be fully placed and carries line-clearing chains
 function onboardShapes(noPuzzle) {
   const o = occNow(), help = run.help || 2;
   const pzChance = help >= 3 ? .02 : help === 2 ? .04 : .06;
   if (!noPuzzle && score >= run.target * .4 && Math.random() < pzChance) { const pz = orderPuzzle(o); if (pz) { lastDealPuzzle = true; return pz; } }
-  const ch = chainHelpers(o, 3);
-  return shuffle(fillFriendly(ch.o, ch.shapes, 5));
+  return shuffle(helpedSet(o, 3, 5));
 }
 // first bad set: big pieces that fit but clear nothing
 function hardShapes() {
@@ -864,11 +971,12 @@ let ripples = [], lastScorePop = 0;
 let shake = { amp: 0, t0: 0, dur: .35 }, shx = 0, shy = 0, zoomFx = null, novaFx = null, homers = [], ambPhase = 0, collectN = 0, lastPillPop = 0;
 
 /* ================= layout & sprites ================= */
+let cvLeft = 0, cvTop = 0, fxLevel = 0, slowAcc = 0;   // fxLevel climbs when the device can't keep up
 let W = 0, H = 0, dpr = 1, s = 40, h = s * HH, boardCX = 0, boardCY = 0, trayCY = 0, trayH = 0, slotDX = 0;
 let sprites = [], whiteSpr = [], boardBg = null, glowSpr = [], starSpr = null;
 
 function layout() {
-  const r = cv.getBoundingClientRect(); W = r.width; H = r.height;
+  const r = cv.getBoundingClientRect(); W = r.width; H = r.height; cvLeft = r.left; cvTop = r.top;
   const cs = getComputedStyle(document.body);
   const padL = parseFloat(cs.paddingLeft) || 16, padR = parseFloat(cs.paddingRight) || 16;
   const cw = W - padL - padR;
@@ -956,6 +1064,16 @@ function makeStar() {
   g.moveTo(0, -30); g.quadraticCurveTo(3, -3, 30, 0); g.quadraticCurveTo(3, 3, 0, 30); g.quadraticCurveTo(-3, 3, -30, 0); g.quadraticCurveTo(-3, -3, 0, -30);
   g.fill(); return c;
 }
+// soft radial images drawn once and stretched; a fresh full-screen gradient every frame is the costliest thing on phones
+const radialCache = new Map();
+function radialSpr(key, stops) {
+  let c = radialCache.get(key); if (c) return c;
+  c = document.createElement('canvas'); c.width = c.height = 128;
+  const g = c.getContext('2d'), rg = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+  stops.forEach(([at, col]) => rg.addColorStop(at, col)); g.fillStyle = rg; g.fillRect(0, 0, 128, 128);
+  radialCache.set(key, c); return c;
+}
+function drawRadial(spr, x, y, r, a) { ctx.globalAlpha = a; ctx.drawImage(spr, x - r, y - r, r * 2, r * 2); ctx.globalAlpha = 1; }
 function buildBoard() {
   const p = s * 0.42, ext = N * s + p * 2 / SQ3, m = Math.ceil(s * 0.8);
   const w = 2 * ext + 2 * m, hh = 2 * (N * h + p) + 2 * m;
@@ -989,7 +1107,7 @@ function applyTheme(id) {
   store.set('tb.theme', id);
 }
 function resize() {
-  dpr = Math.min(2, window.devicePixelRatio || 1);
+  dpr = Math.min(fxLevel === 0 ? 2 : fxLevel === 1 ? 1.5 : 1.25, window.devicePixelRatio || 1);
   layout();
   cv.width = Math.max(1, Math.round(W * dpr)); cv.height = Math.max(1, Math.round(H * dpr));
   sprites = PALETTE.concat([GREY_COL, GOLD_COL]).map(col => [makeTri(col, true), makeTri(col, false)]);
@@ -1316,10 +1434,11 @@ function loadState(sv) {
   score = sv.score | 0; combo = sv.combo | 0; since = sv.since | 0; bestBefore = (sv.bestBefore | 0) || best; gameOver = false;
   tray = [0, 1, 2].map(i => {
     const t = sv.tray[i]; if (!t) return null;
-    let sh = shapeByKey.get(t.k);
+    let sh = t.fit ? null : shapeByKey.get(t.k);
     if (!sh && Array.isArray(t.cells) && t.cells.length && t.cells.length <= MEGA_MAX_FULL) {
       sh = buildShape(norm(t.cells.map(c => ({ u: c.u | 0, v: c.v | 0, t: c.t ? 1 : 0 }))));
       sh.custom = true;
+      if (t.fit && Array.isArray(t.fit.idx)) sh.fit = { du: t.fit.du | 0, dv: t.fit.dv | 0, idx: t.fit.idx.map(x => x | 0) };
       if (t.mega && Array.isArray(t.mega.idx)) sh.mega = { du: t.mega.du | 0, dv: t.mega.dv | 0, idx: t.mega.idx.map(x => x | 0), cleared: t.mega.cleared | 0, full: !!t.mega.full, nova: !!t.mega.nova };
     }
     if (!sh) return null;
@@ -1336,7 +1455,7 @@ function serialize() {
   if (gameOver) return null;
   const gold = []; cells.forEach((c, i) => { if (c.gold && c.color >= 0) gold.push(i); });
   return { v: 1, cells: cells.map(c => c.color), gold,
-    tray: tray.map(p => !p ? null : p.shape.custom ? { k: p.shape.key, c: 0, cells: p.shape.cells, mega: p.shape.mega || null } : { k: p.shape.key, c: p.color, g: p.gold }),
+    tray: tray.map(p => !p ? null : p.shape.custom ? { k: p.shape.key, c: Math.max(0, p.color), cells: p.shape.cells, mega: p.shape.mega || null, fit: p.shape.fit || null } : { k: p.shape.key, c: p.color, g: p.gold }),
     score, combo, since, bestBefore, run };
 }
 function save() { store.set('tb.save', serialize()); }
@@ -1401,7 +1520,7 @@ function commit(p, du, dv, pv) {
     if (!REDUCED) { shake.amp = Math.min(s * (isMega ? .7 : .45), s * (.08 + .07 * L + .03 * combo + (isMega ? .25 : 0))); shake.t0 = now + SLAM; shake.dur = isMega ? .6 : .35; }
     if (L >= 2) rings.push({ x: ix, y: iy, t0: now, dur: .65, r: s * (5 + L * 1.5), color: isMega ? 2 : p.color });
     if (L >= 3 || isMega) flashes.push({ t0: now + SLAM, dur: isMega ? .6 : .4, a: isMega ? .4 : .28 });
-    hitStopLater(isMega ? .12 : .045 + .015 * Math.min(L, 4), SLAM);
+    if (L >= 2 || isMega) hitStopLater(isMega ? .12 : .04 + .015 * Math.min(L, 4), SLAM);
     buzz(isMega ? [30, 40, 30, 40, 80] : L >= 2 ? [25, 30, 45] : 28);
     Sound.clear(L, combo);
     if (nova) {
@@ -1424,7 +1543,7 @@ function commit(p, du, dv, pv) {
       texts.push({ kind: 'pop', text: '+500', x: boardCX, y: boardCY + h * 2.6, size: s * .8, t0: now + .6, dur: 1.2, top: '#ffffff', bot: '#ffe07a', stroke: '#2b1466' });
       confetti(70); Sound.allClear();
     }
-    elScore.classList.remove('bump'); void elScore.offsetWidth; elScore.classList.add('bump');
+    pump(elScore, 1.2, 340);
   } else {
     since++; if (since >= 3) breakCombo();
   }
@@ -1442,12 +1561,26 @@ function afterMove(didClear) {
   Sound.setLevel(combo >= 5 ? 2 : combo >= 2 ? 1 : 0);
   if (!hintGone && run.mode !== 'daily') { hintGone = true; hint.classList.add('gone'); }
 
-  if (tray.every(x => !x)) dealTray(nextShapes(), didClear ? 0.3 : 0.05);
-  else updateFits();
-  if (canRescue() && !tray.some(q => q && q.fits)) rescue();
+  if (tray.every(x => !x)) { scheduleDeal(didClear ? 0.3 : 0.05); updateHud(); save(); return; }
+  updateFits();
+  checkStuck();
+}
+// working out a set takes a few milliseconds on a phone, so it happens just after the slam, not in its frame
+let dealTimer = 0;
+function scheduleDeal(delay) {
+  clearTimeout(dealTimer);
+  dealTimer = setTimeout(() => {
+    dealTimer = 0;
+    if (gameOver || run.maxed) return;
+    dealTray(nextShapes(), Math.max(0, delay - .12));
+    checkStuck();
+  }, 120);
+}
+function checkStuck() {
+  const ok = unstick();
   updateHud();
   save();
-  if (!tray.some(q => q && q.fits)) scheduleGameOver();
+  if (!ok) scheduleGameOver();
 }
 // 15.000 is the ceiling: celebrate, then the run ends
 function hitLimit() {
@@ -1527,11 +1660,16 @@ function scoreStream(x, y, n) {
 }
 function scorePop() {
   const t = performance.now(); if (t - lastScorePop < 90) return; lastScorePop = t;
-  elScore.classList.remove('bump'); void elScore.offsetWidth; elScore.classList.add('bump');
+  pump(elScore, 1.12, 220);
 }
 function pillPop() {
   const t = performance.now(); if (t - lastPillPop < 70) return; lastPillPop = t;
-  elCombo.classList.remove('pop'); void elCombo.offsetWidth; elCombo.classList.add('pop');
+  pump(elCombo, 1.32, 260);
+}
+// quick scale pulse through the Web Animations API: no class juggling, no forced layout
+function pump(el, k, ms) {
+  if (REDUCED || !el.animate) return;
+  el.animate([{ transform: 'scale(1)' }, { transform: 'scale(' + k + ')', offset: .4 }, { transform: 'scale(1)' }], { duration: ms, easing: 'ease-out' });
 }
 function breakCombo() {
   if (combo >= 2) {
@@ -1575,7 +1713,7 @@ function commitSpecial(p, at) {
     if (combo >= 2) { texts.push(comboText(boardCY - h * .7 + s * 1.3, true)); comboStream(c0.x, c0.y); }
     if (golds) goldFx(golds, mult, c0.x, c0.y);
     ripple(c0.x, c0.y, kind === 'bomb' ? 1.6 : 1.1); scoreStream(c0.x, c0.y, Math.min(16, 4 + (hit.length >> 1)));
-    elScore.classList.remove('bump'); void elScore.offsetWidth; elScore.classList.add('bump');
+    pump(elScore, 1.2, 340);
   } else { since++; if (since >= 3) breakCombo(); }
   if (kind === 'bomb') {
     texts.push({ kind: 'big', text: 'BOOM!', x: boardCX, y: boardCY - h * .7, size: s * 1.5, t0: now + .05, dur: 1.2, top: '#fff3d6', bot: '#ff7a1f', stroke: '#4a1a00', rays: true, rayColor: '#ff9a30' });
@@ -1615,12 +1753,33 @@ function checkUnlocks() {
 }
 // safety net before the target: stuck means a fresh set, dealt like any other.
 // An order puzzle is the exception: solve it or lose.
-// onboarding has no safety net: mistakes there end the run for real
+// onboarding keeps its set, but one piece that fits nowhere is recut to fit the board
 const canRescue = () => !run.bad && score < run.target && (run.mode === 'record' || (run.mode === 'normal' && !trayPuzzle));
+const canRecut = () => !run.bad && score < run.target && run.mode === 'onboard' && !trayPuzzle && tray.some(q => q);
+function unstick() {
+  if (tray.some(q => q && q.fits)) return true;
+  if (canRescue()) { rescue(); return true; }
+  return canRecut() && recutPiece();
+}
+function recutPiece() {
+  const o = occNow(), ch = chainHelpers(o, 1, true);
+  let sh = ch.shapes[0];
+  if (!sh) { const ph = pocketHelper(o); sh = ph && ph.sh; }
+  if (!sh) sh = allShapes.filter(x => placementsOcc(o, x).length).sort((a, b) => b.size - a.size)[0];
+  const slot = tray.findIndex(q => q && !q.fits);
+  if (!sh || slot < 0) return false;
+  now = T();
+  tray[slot] = makePiece(sh, tray[slot].color, slot, .25);
+  texts.push({ kind: 'pop', text: 'Rettungsteil!', x: slotX(slot), y: trayCY - trayH * .6, size: s * .5, t0: now + .2, dur: 1.5, top: '#eafff0', bot: '#5fe08a', stroke: '#0f3d24' });
+  for (let k = 0; k < 14; k++) sparks.push({ x: slotX(slot) + (Math.random() - .5) * s * 2, y: trayCY + (Math.random() - .5) * s * 1.4, vx: (Math.random() - .5) * s * 3, vy: -s * (1 + Math.random() * 3), t0: now + .2, life: .7, size: s * (.25 + Math.random() * .3), ci: 3, star: k % 2 === 0 });
+  Sound.rescue(); buzz([20, 30, 40]);
+  updateFits();
+  return tray.some(q => q && q.fits);
+}
 function rescue() { dealTray(run.mode === 'record' ? boostShapes() : normalShapes(true), 0.12); }
 function scheduleGameOver() {
   if (overTimer || gameOver) return;
-  if (canRescue()) { rescue(); return; }
+  if (unstick()) return;
   overTimer = setTimeout(() => {
     overTimer = 0;
     if (tray.some(q => q && q.fits)) return;
@@ -1731,7 +1890,7 @@ function openShare() {
   shareWrap.hidden = false;
 }
 function restart(mode) {
-  clearTimeout(overTimer); clearTimeout(showTimer); overTimer = 0; showTimer = 0;
+  clearTimeout(overTimer); clearTimeout(showTimer); clearTimeout(dealTimer); overTimer = 0; showTimer = 0; dealTimer = 0;
   over.hidden = true; shareWrap.hidden = true; menuWrap.hidden = true; locked = false;
   clears = []; shards = []; sparks = []; texts = []; rings = []; beams = []; flashes = []; homers = []; ripples = [];
   drag = null; preview = null; prevKey = '';
@@ -1752,8 +1911,8 @@ function updateHud() {
     elComboN.textContent = combo;
     elDots.forEach((d, i) => d.classList.toggle('on', i < 3 - since));
   } else if (performance.now() - comboBrokeAt < 720) {
-    elCombo.hidden = false; elCombo.classList.remove('hot', 'blaze', 'pop'); elCombo.classList.add('broken');
-  } else { elCombo.hidden = true; elCombo.classList.remove('hot', 'broken', 'blaze', 'pop'); }
+    elCombo.hidden = false; elCombo.classList.remove('hot', 'blaze'); elCombo.classList.add('broken');
+  } else { elCombo.hidden = true; elCombo.classList.remove('hot', 'broken', 'blaze'); }
   updateRecBar();
 }
 // near-miss bar: shows from 80 % of the record, celebrates the moment it falls
@@ -1917,7 +2076,7 @@ function spawnSpark(x, y, ci, speed, life, size) {
 }
 function burstCell(e) {
   const col = e.gold ? GOLD_COL : (PALETTE[e.color] || PALETTE[0]);
-  const n = REDUCED ? 2 : 4 + Math.min(4, combo >> 1);
+  const n = REDUCED || fxLevel > 1 ? 2 : 3 + Math.min(3, combo >> 2);
   for (let k = 0; k < n; k++) {
     let dx = e.x - e.ix, dy = e.y - e.iy; const dl = Math.hypot(dx, dy) || 1; dx /= dl; dy /= dl;
     const a = Math.random() * Math.PI * 2, sp = s * (2.5 + Math.random() * 6);
@@ -1935,7 +2094,7 @@ function burstCell(e) {
   Sound.crack();
 }
 function confetti(n) {
-  const cnt = REDUCED ? Math.round(n / 3) : n;
+  const cnt = REDUCED ? Math.round(n / 3) : fxLevel > 1 ? Math.round(n / 2) : n;
   for (let i = 0; i < cnt; i++) {
     const col = pick(PALETTE);
     shards.push({
@@ -1947,7 +2106,7 @@ function confetti(n) {
 }
 
 /* ================= input ================= */
-function localPt(e) { const r = cv.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; }
+function localPt(e) { return [e.clientX - cvLeft, e.clientY - cvTop]; }
 function computePreview(p, tx, ty) {
   const sh = p.shape;
   if (sh.special) {
@@ -1968,8 +2127,9 @@ function computePreview(p, tx, ty) {
       if (d < bd && canPlace(sh, du, dv)) { bd = d; bestP = { du, dv }; }
     }
   }
-  if (sh.mega) {
-    const m = sh.mega, d = Math.hypot(m.du + m.dv / 2 - Ox, -m.dv * HH - Oy);
+  const m = sh.mega || sh.fit;   // pieces cut for a spot snap into it from further away
+  if (m) {
+    const d = Math.hypot(m.du + m.dv / 2 - Ox, -m.dv * HH - Oy);
     if (d < 1.8 && canPlace(sh, m.du, m.dv)) bestP = { du: m.du, dv: m.dv };
   }
   if (!bestP) return null;
@@ -2066,7 +2226,8 @@ function update(dt) {
   beams = beams.filter(b => now - b.t0 < .55);
   flashes = flashes.filter(f => now - f.t0 < f.dur);
   ripples = ripples.filter(r => now - r.t0 < 1.6);
-  if (shards.length > 900) shards.splice(0, shards.length - 900);
+  const maxShards = fxLevel > 1 ? 200 : 450;
+  if (shards.length > maxShards) shards.splice(0, shards.length - maxShards);
 
   if (displayScore !== score) {
     displayScore += (score - displayScore) * (1 - Math.exp(-dt * 9));
@@ -2169,6 +2330,11 @@ function drawMegaHalo(p) {
     if (p.state !== 'drag') drawLabel(p.special === 'bomb' ? 'BOMBE' : 'BLITZ', p.x, p.y - s * .95, s * .38, 1, .95, '#ffffff', p.special === 'bomb' ? '#ffb27a' : '#a5f1ff', '#2b1466');
     return;
   }
+  if (p.shape.fit) {
+    if (!REDUCED) drawRays(p.x, p.y, Math.max(p.shape.bw, p.shape.bh) * s * p.scale * .6 + s * .7, .35 + .15 * Math.sin(now * 4), now * .5, '#8affb0');
+    if (p.state !== 'drag') drawLabel('PERFEKT', p.x, p.y - p.shape.bh * s * p.scale / 2 - s * .3, s * .36, 1, .95, '#ffffff', '#5fe08a', '#0f3d24');
+    return;
+  }
   if (!p.mega) return;
   const sz = Math.max(p.shape.bw, p.shape.bh) * s * p.scale, nova = !!p.shape.mega.nova;
   if (!REDUCED) drawRays(p.x, p.y, sz * (nova ? .95 : .75) + s * (nova ? 1.4 : .9), .55 + .25 * Math.sin(now * 4), now * (nova ? 1.6 : .7),
@@ -2247,9 +2413,7 @@ function render() {
   const fever = combo >= 5 && !gameOver, fp = .5 + .5 * Math.sin(now * 6);
   if (fever) {
     ctx.globalCompositeOperation = 'lighter';
-    const rg = ctx.createRadialGradient(boardCX, boardCY, s * 2, boardCX, boardCY, Math.max(W, H) * .75);
-    rg.addColorStop(0, `rgba(255,80,170,${.14 + .08 * fp})`); rg.addColorStop(1, 'rgba(255,140,40,0)');
-    ctx.fillStyle = rg; ctx.fillRect(-20, -20, W + 40, H + 40);
+    drawRadial(radialSpr('fever', [[0, 'rgba(255,80,170,1)'], [.1, 'rgba(255,80,170,1)'], [1, 'rgba(255,140,40,0)']]), boardCX, boardCY, Math.max(W, H) * .75, .14 + .08 * fp);
     ctx.globalCompositeOperation = 'source-over';
   }
   drawSpr(boardBg, boardCX, boardCY, 1);
@@ -2293,7 +2457,7 @@ function render() {
     } else if (c.popKind === 1 && age < SLAM + .32) { const sl = slamAt(age); k = sl[0]; fl = sl[1]; px = c.pcx + (c.x - c.pcx) * k; py = c.pcy + (c.y - c.pcy) * k; }
     else if (c.popKind === 2 && age < .34) k = Math.max(.01, easeOutBack(age / .34));
     if (gameOver && now >= c.greyAt && now - c.greyAt < .2) { k = 1 + .1 * (1 - (now - c.greyAt) / .2); }
-    if (ripples.length) { const rp = rippleAt(c.x, c.y); oy += rp[0]; k += rp[1]; if (rp[1] > 0) fl = Math.max(fl, rp[1] * 2.2); }
+    if (ripples.length) { const rp = rippleAt(c.x, c.y); oy += rp[0]; k += rp[1]; }
     drawSpr(sprites[ci][c.t], px, py + oy, k);
     ctx.globalAlpha = 1;
     if (fl > 0) glow(c.t, px, py + oy, fl, k);
@@ -2327,12 +2491,13 @@ function render() {
     ctx.beginPath(); ctx.arc(tc.x, tc.y, s * (spv.special === 'bomb' ? 1.25 : .45), 0, 6.283); ctx.stroke(); ctx.restore();
   }
   if (preview && preview.full.length) for (const li of preview.full) drawBeam(lines[li], pc === RAINBOW ? li % PALETTE.length : pc, .1 + .1 * pulse, .8);
-  // while the mega piece is held, its sweet spot shimmers on the board
-  if (drag && drag.p.mega && !(preview && preview.key === drag.p.shape.mega.du + ',' + drag.p.shape.mega.dv)) {
-    const m = drag.p.shape.mega;
+  // while a mega or perfect piece is held, the spot it was cut for shimmers on the board
+  const held = drag && (drag.p.shape.mega || drag.p.shape.fit);
+  if (held && !(preview && preview.key === held.du + ',' + held.dv)) {
+    const m = held, mega = !!drag.p.shape.mega;
     if (canPlace(drag.p.shape, m.du, m.dv)) for (const j of m.idx) {
       const c = cells[j];
-      ctx.globalAlpha = .24 + .18 * pulse; drawSpr(sprites[rainbowAt(j)][c.t], c.x, c.y, 1); ctx.globalAlpha = 1;
+      ctx.globalAlpha = .24 + .18 * pulse; drawSpr(sprites[mega ? rainbowAt(j) : drag.p.color][c.t], c.x, c.y, 1); ctx.globalAlpha = 1;
       glow(c.t, c.x, c.y, .08 + .1 * pulse);
     }
   }
@@ -2411,19 +2576,16 @@ function render() {
   }
   for (const f of flashes) {
     const q = (now - f.t0) / f.dur; if (q < 0) continue;
-    const rg = ctx.createRadialGradient(boardCX, boardCY, 0, boardCX, boardCY, Math.max(W, H) * .7);
-    rg.addColorStop(0, `rgba(255,255,255,${f.a * (1 - q)})`); rg.addColorStop(1, 'rgba(255,255,255,0)');
-    ctx.globalAlpha = 1; ctx.fillStyle = rg; ctx.fillRect(-20, -20, W + 40, H + 40);
+    drawRadial(radialSpr('flash', [[0, 'rgba(255,255,255,1)'], [1, 'rgba(255,255,255,0)']]), boardCX, boardCY, Math.max(W, H) * .7, f.a * (1 - q));
   }
   // screen edges glow and pulse with the combo, faster and hotter as it climbs
   if (combo >= 3 && !gameOver) {
     const t = Math.min(combo, 12), beat = .5 + .5 * Math.sin(now * (6 + t * .5));
-    const col = combo >= 9 ? `hsla(${(now * 200) % 360},100%,60%,` : combo >= 6 ? 'rgba(255,70,170,' : combo >= 4 ? 'rgba(255,170,40,' : 'rgba(80,210,255,';
-    const a = (.12 + t * .028) * (.65 + .35 * beat);
+    const hue = Math.floor((now * 200) % 360 / 15) * 15;
+    const col = combo >= 9 ? `hsla(${hue},100%,60%,` : combo >= 6 ? 'rgba(255,70,170,' : combo >= 4 ? 'rgba(255,170,40,' : 'rgba(80,210,255,';
+    const a = (.12 + t * .028) * (.65 + .35 * beat), R = Math.max(W, H) * .78, inner = Math.min(W, H) * .32 / R;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    const g = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * .32, W / 2, H / 2, Math.max(W, H) * .78);
-    g.addColorStop(0, col + '0)'); g.addColorStop(1, col + a.toFixed(3) + ')');
-    ctx.globalAlpha = 1; ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    drawRadial(radialSpr('edge' + col + inner.toFixed(2), [[0, col + '0)'], [inner, col + '0)'], [1, col + '1)']]), W / 2, H / 2, R, a);
     ctx.setTransform(dpr, 0, 0, dpr, shx * dpr, shy * dpr);
   }
   ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
@@ -2431,8 +2593,13 @@ function render() {
   for (const t of texts) drawText(t);
 }
 function frame(ts) {
-  const real = ts / 1000;
-  let dt = Math.min(.05, Math.max(0, real - realLast)); realLast = real;
+  const real = ts / 1000, gap = real - realLast;
+  let dt = Math.min(.05, Math.max(0, gap)); realLast = real;
+  // a phone that keeps missing frames gets a lower canvas resolution and fewer particles
+  if (fxLevel < 2 && !document.hidden && gap > 0 && gap < .3) {
+    slowAcc = gap > .026 ? slowAcc + gap : Math.max(0, slowAcc - gap * .25);
+    if (slowAcc > 1.5) { fxLevel++; slowAcc = 0; resize(); }
+  }
   if (real < freezeUntil) dt = 0;            // hit-stop: the world holds its breath
   gclock += dt; now = gclock; last = now;
   update(dt);
@@ -2452,6 +2619,8 @@ function start(data) {
   requestAnimationFrame(frame);
   if (!tray.some(p => p && p.fits)) scheduleGameOver();
   if (document.fonts && document.fonts.load) { document.fonts.load('40px "Lilita One"').catch(() => {}); }
+  // build the placement tables while the player looks at the first set, not during the first deal
+  setTimeout(() => { for (const sh of allShapes.concat(longBars)) placementsAt(sh, 0); }, 400);
 }
 let rzT = 0;
 function onResize() { clearTimeout(rzT); rzT = setTimeout(() => { resize(); }, 60); }
