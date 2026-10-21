@@ -967,7 +967,7 @@ const LOOK_GOALS = {
 };
 let now = T(), last = now;
 let clears = [], shards = [], sparks = [], texts = [], rings = [], beams = [], flashes = [], ambient = [];
-let ripples = [], lastScorePop = 0;
+let lastScorePop = 0;
 let shake = { amp: 0, t0: 0, dur: .35 }, shx = 0, shy = 0, zoomFx = null, novaFx = null, homers = [], ambPhase = 0, collectN = 0, lastPillPop = 0;
 
 /* ================= layout & sprites ================= */
@@ -1502,8 +1502,6 @@ function commit(p, du, dv, pv) {
     });
     cleared = clearSet.size + novaSet.size;
     full.forEach(li => beams.push({ L: lines[li], color: isMega ? li % PALETTE.length : p.color, t0: now + SLAM, ix, iy }));
-    ripple(ix, iy, Math.min(1.8, .8 + .3 * L + (isMega ? .6 : 0) + (nova ? .6 : 0)), SLAM);
-    if (!nova && !REDUCED && L >= 2) zoomFx = { t0: now, dur: .38, amp: Math.min(.05, .012 + .009 * L) };
     scoreStream(ix, iy, Math.min(18, 4 + L * 3 + (isMega ? 6 : 0)));
     // texts
     const praise = nova ? 'SUPERNOVA!' : isMega ? 'MEGA!' : L >= 2 ? PRAISE[Math.min(L, 5)] : null;
@@ -1630,15 +1628,13 @@ function comboStream(x, y) {
     cx: x + (Math.random() - .5) * s * 7, cy: Math.min(y, ty) - s * (.5 + Math.random() * 2.5),
     t0: now + .12 + k * .028, dur: .5 + Math.random() * .2, ci: tier === 3 ? k % PALETTE.length : [4, 1, 0][tier], size: s * (.26 + Math.random() * .18), hit: false });
 }
-// the moment a piece lands: shock ring, dust thrown out from its edges, a bump, a wave and a thud
+// the moment a piece lands: shock rings, dust thrown out from its edges and a thud; the board itself stays still
 function slamFx(idxs, ix, iy, ringCol, colOf) {
   const t0 = now + SLAM, n = idxs.length;
   rings.push({ x: ix, y: iy, t0, dur: .42, r: s * (1.6 + n * .16), color: ringCol });
   rings.push({ x: ix, y: iy, t0: t0 + .05, dur: .5, r: s * (2.4 + n * .2), color: ringCol });
-  ripple(ix, iy, .5 + Math.min(n, 8) * .05, SLAM);
   setTimeout(() => buzz(18), SLAM * 1000);
   if (REDUCED) return;
-  if (shake.amp === 0) { shake.amp = s * (.05 + n * .008); shake.t0 = t0; shake.dur = .2; }
   for (const i of idxs) {
     const c = cells[i]; let dx = c.x - ix, dy = c.y - iy; const dl = Math.hypot(dx, dy) || 1; dx /= dl; dy /= dl;
     for (let k = 0; k < 3; k++) {
@@ -1712,7 +1708,7 @@ function commitSpecial(p, at) {
     texts.push({ kind: 'pop', text: '+' + fmt(gained), x: c0.x, y: c0.y - s * .3, size: s * .72, t0: now, dur: 1.0, top: '#ffffff', bot: '#ffe07a', stroke: '#2b1466' });
     if (combo >= 2) { texts.push(comboText(boardCY - h * .7 + s * 1.3, true)); comboStream(c0.x, c0.y); }
     if (golds) goldFx(golds, mult, c0.x, c0.y);
-    ripple(c0.x, c0.y, kind === 'bomb' ? 1.6 : 1.1); scoreStream(c0.x, c0.y, Math.min(16, 4 + (hit.length >> 1)));
+    scoreStream(c0.x, c0.y, Math.min(16, 4 + (hit.length >> 1)));
     pump(elScore, 1.2, 340);
   } else { since++; if (since >= 3) breakCombo(); }
   if (kind === 'bomb') {
@@ -1892,7 +1888,7 @@ function openShare() {
 function restart(mode) {
   clearTimeout(overTimer); clearTimeout(showTimer); clearTimeout(dealTimer); overTimer = 0; showTimer = 0; dealTimer = 0;
   over.hidden = true; shareWrap.hidden = true; menuWrap.hidden = true; locked = false;
-  clears = []; shards = []; sparks = []; texts = []; rings = []; beams = []; flashes = []; homers = []; ripples = [];
+  clears = []; shards = []; sparks = []; texts = []; rings = []; beams = []; flashes = []; homers = [];
   drag = null; preview = null; prevKey = '';
   newGame(mode);
 }
@@ -2058,18 +2054,6 @@ function slamAt(age) {
   const q = (age - SLAM) / .32; if (q >= 1) return [1, 0];
   return [1 - .1 * Math.cos(q * Math.PI * 2) * (1 - q) * (1 - q), .95 * (1 - q) * (1 - q)];
 }
-// a wave runs out from the impact and makes every stone on the board hop as it passes
-function ripple(x, y, amp, delay) { if (!REDUCED) ripples.push({ x, y, t0: now + (delay || 0), amp }); }
-function rippleAt(x, y) {
-  let oy = 0, k = 0;
-  for (const r of ripples) {
-    const d = Math.hypot(x - r.x, y - r.y), age = now - r.t0 - d / (s * 16);
-    if (age <= 0 || age >= .42) continue;
-    const q = age / .42, e = Math.sin(q * Math.PI * 2) * (1 - q) * r.amp * Math.max(.3, 1 - d / (s * 10));
-    oy -= e * s * .22; k += e * .09;
-  }
-  return [oy, k];
-}
 function spawnSpark(x, y, ci, speed, life, size) {
   const a = Math.random() * Math.PI * 2;
   sparks.push({ x, y, vx: Math.cos(a) * speed, vy: Math.sin(a) * speed, t0: now, life, size, ci, star: false });
@@ -2225,7 +2209,6 @@ function update(dt) {
   rings = rings.filter(r => now - r.t0 < r.dur);
   beams = beams.filter(b => now - b.t0 < .55);
   flashes = flashes.filter(f => now - f.t0 < f.dur);
-  ripples = ripples.filter(r => now - r.t0 < 1.6);
   const maxShards = fxLevel > 1 ? 200 : 450;
   if (shards.length > maxShards) shards.splice(0, shards.length - maxShards);
 
@@ -2457,7 +2440,6 @@ function render() {
     } else if (c.popKind === 1 && age < SLAM + .32) { const sl = slamAt(age); k = sl[0]; fl = sl[1]; px = c.pcx + (c.x - c.pcx) * k; py = c.pcy + (c.y - c.pcy) * k; }
     else if (c.popKind === 2 && age < .34) k = Math.max(.01, easeOutBack(age / .34));
     if (gameOver && now >= c.greyAt && now - c.greyAt < .2) { k = 1 + .1 * (1 - (now - c.greyAt) / .2); }
-    if (ripples.length) { const rp = rippleAt(c.x, c.y); oy += rp[0]; k += rp[1]; }
     drawSpr(sprites[ci][c.t], px, py + oy, k);
     ctx.globalAlpha = 1;
     if (fl > 0) glow(c.t, px, py + oy, fl, k);
